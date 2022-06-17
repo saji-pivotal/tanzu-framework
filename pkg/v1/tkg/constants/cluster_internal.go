@@ -146,4 +146,5 @@ const (
 	TKGManagementPackageInstallName    = "tkg-pkg"
 	TKGManagementPackageRepositoryName = "tanzu-management"
 	PackageTypeManagement              = "management"
+	TKGAutoscalerPackageInstallName    = "tkg-autoscaler.tanzu.vmware.com"
 )

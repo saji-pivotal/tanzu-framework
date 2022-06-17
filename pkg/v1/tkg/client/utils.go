@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sigs.k8s.io/yaml"
+	"strconv"
 	"time"
 
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
@@ -424,4 +426,82 @@ func getCCPlanFromLegacyPlan(plan string) (string, error) {
 		return constants.PlanProdCC, nil
 	}
 	return "", errors.Errorf("unknown plan '%v'", plan)
+}
+
+func (c *TkgClient) getAutoScalerValuesFileFromConfigs(options *CreateClusterOptions) (string, error) {
+	return c.GetAutoScalerValuesFileFromConfigs(options.ClusterName, options.TargetNamespace, "workload", options.ProviderRepositorySource.InfrastructureProvider)
+}
+
+func (c *TkgClient) GetAutoScalerValuesFileFromConfigs(clusterName, namespace, clusterRole, infrastructureProvider string) (string, error) {
+	autoScalerConfigs := map[string]string{
+		constants.ConfigVariableClusterName:  clusterName,
+		constants.ConfigVariableNamespace:    namespace,
+		constants.ConfigVariableClusterRole:  clusterRole,
+		constants.ConfigVariableProviderType: infrastructureProvider,
+	}
+
+	err := c.populateAutoScalerConfigVariables(autoScalerConfigs)
+	if err != nil {
+		return "", err
+	}
+
+	configBytes, err := yaml.Marshal(autoScalerConfigs)
+	if err != nil {
+		return "", err
+	}
+
+	valuesFile, err := utils.CreateTempFile("", "")
+	if err != nil {
+		return "", err
+	}
+
+	err = utils.WriteToFile(valuesFile, configBytes)
+	if err != nil {
+		return "", err
+	}
+
+	log.Infof("Values File %s", valuesFile)
+	return valuesFile, nil
+}
+
+func (c *TkgClient) populateAutoScalerConfigVariables(autoScalerMap map[string]string) error {
+	configs := []string{constants.ConfigVariableAutoscalerMaxNodesTotal, constants.ConfigVariableScaleDownDelayAfterAdd, constants.ConfigVariableAutoScalerScaleDownDelayAfterDelete,
+		constants.ConfigVariableScaleDownDelayAfterFailure, constants.ConfigVariableScaleDownUnneededTime, constants.ConfigVariableMaxNodeProvisionTime}
+
+	for _, configKey := range configs {
+		configValue, err := c.TKGConfigReaderWriter().Get(configKey)
+		if err != nil {
+			return errors.Wrapf(err, "unable to get config value for autoscaler config %s", configKey)
+		}
+		err = validateAutoScalerConfigs(configKey, configValue)
+		if err != nil {
+			return errors.Wrapf(err, "validation failed for autoscaler config key %s, with value %s", configKey, configValue)
+		}
+
+		autoScalerMap[configKey] = configValue
+	}
+
+	return nil
+}
+
+func validateAutoScalerConfigs(configKey, configValue string) error {
+	if configKey == constants.ConfigVariableAutoscalerMaxNodesTotal {
+		intVal, err := strconv.Atoi(configValue)
+		if err != nil {
+			return errors.Wrapf(err, "invalid value %s for config key %s", configValue, configKey)
+		}
+		if intVal < 0 {
+			return fmt.Errorf("%s cannot have a value less than 0", configKey)
+		}
+	} else {
+		timeVal, err := time.ParseDuration(configValue)
+		if err != nil {
+			return errors.Wrapf(err, "invalid value %s for config key %s. The value needs to be a valid duration e.g(10m, 5s, 3h)", configValue, configKey)
+		}
+		if timeVal < 0 {
+			return fmt.Errorf("invalid value %s for config key %s. The time duration cannot be negative", configValue, configKey)
+		}
+	}
+
+	return nil
 }
